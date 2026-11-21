@@ -8,6 +8,7 @@ from pydantic import BaseModel
 
 from auth import AuthHeader, require_user, require_writer
 from db import connect, write_audit
+from hold_svc import reject_closed_hold
 from locks import release, require_lock
 
 router = APIRouter(tags=["waitlist"])
@@ -63,6 +64,9 @@ def promote_wait(body: PromoteIn, authorization: AuthHeader = None):
         try:
             if wrow["status"] != "候补中":
                 raise HTTPException(409, "候补非候补中")
+            if slot["status"] == "关闭":
+                # 占位写口同口径：关盘拒占（甲路径，见 hold_svc.reject_closed_hold）
+                reject_closed_hold(conn, user, slot, wrow["party_key"], wrow["seats"])
             pending = conn.execute(
                 "SELECT COALESCE(SUM(seats),0) s FROM holds WHERE slot_id=? AND status='占位中'",
                 (slot["id"],),

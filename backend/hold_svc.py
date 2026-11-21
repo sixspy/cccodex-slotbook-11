@@ -19,6 +19,29 @@ class HoldIn(BaseModel):
     seats: int = Field(ge=1, le=50)
 
 
+def reject_closed_hold(conn, user: str, slot, party_key: str, seats: int) -> None:
+    """甲路径·关盘校验整笔回滚（见 docs/关盘拒占说明.md，2026-11-21 锁死）。
+
+    档锁内读到已关盘：占位零增（调用点尚未触碰 holds/waitlist，整笔无业务写），
+    只把拒占痕提交落库后拒写；拒占痕落库失败则整笔同败，不留半截。
+    乙路径（关盘核销影子切换）禁用，不得混用。
+    """
+    write_audit(
+        conn,
+        user,
+        "hold_reject_closed",
+        party_key,
+        {
+            "slot": slot["code"],
+            "seats": seats,
+            "slot_status": slot["status"],
+            "rule": "关盘拒占",
+        },
+    )
+    conn.commit()
+    raise HTTPException(409, "档期已关盘，禁止占位")
+
+
 @router.get("/api/holds")
 def list_holds(authorization: AuthHeader = None):
     require_user(authorization)
@@ -42,6 +65,8 @@ def create_hold(body: HoldIn, authorization: AuthHeader = None):
             ).fetchone()
             if not slot:
                 raise HTTPException(404, "档期不存在")
+            if slot["status"] == "关闭":
+                reject_closed_hold(conn, user, slot, body.party_key, body.seats)
             if slot["status"] != "开放":
                 raise HTTPException(409, "档期未开放，禁止占位")
             remain = int(slot["capacity"]) - int(slot["booked"])
